@@ -1,8 +1,11 @@
-import { Component, signal, computed, ChangeDetectionStrategy, inject, OnInit } from '@angular/core';
-import { CommonModule } from '@angular/common';
-import { ReactiveFormsModule, FormBuilder, Validators } from '@angular/forms';
+import { Component, signal, computed, ChangeDetectionStrategy, inject, OnInit, DestroyRef, PLATFORM_ID } from '@angular/core';
+import { CommonModule, isPlatformBrowser } from '@angular/common';
+import { ReactiveFormsModule, FormBuilder, Validators, FormControl } from '@angular/forms';
 import { EmailService, NaasNotification } from '../services/email.service';
 import { NaasProviderGroup, ProviderGroupService } from '../services/providerGroup.service';
+import { switchMap, timer } from 'rxjs';
+import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
+import { setAuthCookie, UserService } from '../services/user.service';
 
 // interface FormNotification {
 //   id: string;
@@ -22,9 +25,13 @@ import { NaasProviderGroup, ProviderGroupService } from '../services/providerGro
 })
 export class HomeComponent implements OnInit {
   private fb = inject(FormBuilder);
+  // private destroyRef = inject(DestroyRef);
+  // private platformId = inject(PLATFORM_ID);
+  bulkEmailCount = new FormControl(100, [Validators.max(500), Validators.min(10)]);
+  authenticationCode = new FormControl(null);
   
   view = signal<'list' | 'create'>('list');
-  filter = signal<'all' | 'sent' | 'draft' | 'sending' | 'scheduled'>('all');
+  filter = signal<'all' | 'sent' | 'draft' | 'sending' | 'scheduled' | 'fail'>('all');
   toastMessage = signal<string | null>(null);
   showPreview = signal(false);
   notifications = signal<NaasNotification[]>([]);
@@ -32,9 +39,10 @@ export class HomeComponent implements OnInit {
   filteredNotifications = computed(() => {
     const all = this.notifications();
     switch (this.filter()) {
-      case 'sent': return all.filter(n => n.isDraft == 's');
+      case 'sent': return all.filter(n => n.isDraft === "s");
       case 'scheduled': return all.filter(n => n.sendDate > new Date().toISOString());
       case 'draft': return all.filter(n => n.isDraft === "y");
+      case 'fail': return all.filter(n => n.isDraft === "f")
       default: return all;
     }
   });
@@ -50,10 +58,33 @@ export class HomeComponent implements OnInit {
       this.providers.set(res);
     })
 
-    // Poll every 2 seconds to show "Live" movement
-    setInterval(() => {
-      // this.emailService.getMQStatus().subscribe(res => this.mqStatus.set(res));
-    }, 2000);
+    // Poll every 3 seconds to show "Live" movement for MQ Monitor
+    // 1. Guard: Only run in the browser
+    // if (isPlatformBrowser(this.platformId)) {
+      
+    //   // 2. Setup a timer: Wait 0ms, then run every 3 seconds
+    //   timer(0, 1500).pipe(
+    //     // switchMap cancels the previous request if it hasn't finished
+    //     switchMap(() => this.emailService.getMQStatus()),
+    //     // 3. Auto-unsubscribe when the user navigates away
+    //     takeUntilDestroyed(this.destroyRef)
+    //   ).subscribe({
+    //     next: (res) => {this.mqStatus.set(res); console.log("mqQueueDepth: ", res.queueDepth); if (res.queueDepth > 0) {alert("QUEUE DEPTH > 0")}},
+    //     error: (err) => console.error('MQ Heartbeat failed', err)
+    //   });
+    // }
+  }
+
+  authorizeUser() {
+    console.log(this.authenticationCode);
+    if (this.authenticationCode.value) {
+      this.userService.authorizeUser(this.authenticationCode.value).subscribe(res => {
+        if (res.status == "success") {
+          setAuthCookie(res.token);
+        }
+        alert(res.status);
+      })
+    }
   }
 
   editNotification(n: NaasNotification) {
@@ -169,7 +200,7 @@ export class HomeComponent implements OnInit {
     };
   
     // Trigger the API call
-    this.emailService.createNotification(notificationPayload).subscribe({
+    this.emailService.createNotification(notificationPayload)?.subscribe({
       next: (res) => {
         console.log('Notification sent successfully:', res);
         
@@ -182,6 +213,25 @@ export class HomeComponent implements OnInit {
       },
       error: (err) => console.error('Error sending notification:', err)
     });
+  }
+
+  getBulkEmailTest() {
+    if (this.bulkEmailCount.valid && this.bulkEmailCount.value) {
+      console.log("bulking: " + this.bulkEmailCount.value)
+      this.emailService.getBulkEmailTest(this.bulkEmailCount.value)?.subscribe(res => {
+        console.log(res)
+      })
+    }
+  }
+
+  sendFailureEmail() {
+    const bodyControl = this.emailForm.get("body")
+    console.log(this.emailForm)
+    console.log(bodyControl?.value)
+    if (bodyControl) {
+      bodyControl.setValue(bodyControl.value + "FORCE_FAIL")
+      this.sendEmail()
+    }
   }
 
   deleteNotification(id: string) {
@@ -217,5 +267,5 @@ export class HomeComponent implements OnInit {
   //   setTimeout(() => this.toastMessage.set(null), 3500);
   // }
 
-  constructor(private emailService: EmailService, private providerGroupService: ProviderGroupService) {};
+  constructor(private emailService: EmailService, private providerGroupService: ProviderGroupService, private userService: UserService) {};
 }
